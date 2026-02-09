@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <title>HTA 进程管理器</title>
+  <hta:application
+    id="ProcessManager"
+    border="thin"
+    caption="yes"
+    maximizeButton="yes"
+    minimizeButton="yes"
+    scroll="no"
+    singleInstance="yes"
+    sysMenu="yes"
+    windowState="normal"
+  />
+  <style>
+    body {
+      font-family: Segoe UI, Arial, sans-serif;
+      margin: 0;
+      background: #f4f6f9;
+      color: #222;
+    }
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      background: #ffffff;
+      border-bottom: 1px solid #d7dbe0;
+    }
+    .toolbar input {
+      padding: 6px 8px;
+      border: 1px solid #c7ccd3;
+      border-radius: 4px;
+      width: 220px;
+    }
+    .toolbar button {
+      padding: 6px 12px;
+      border: 1px solid #c7ccd3;
+      background: #f0f3f7;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .toolbar button.primary {
+      background: #2f6feb;
+      border-color: #2f6feb;
+      color: #fff;
+    }
+    .stats {
+      margin-left: auto;
+      font-size: 12px;
+      color: #5a6772;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+    }
+    thead th {
+      position: sticky;
+      top: 0;
+      background: #f7f8fb;
+      border-bottom: 1px solid #d7dbe0;
+      text-align: left;
+      padding: 8px 10px;
+      font-size: 12px;
+    }
+    tbody td {
+      padding: 6px 10px;
+      border-bottom: 1px solid #eef1f4;
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    tbody tr:hover {
+      background: #eaf1ff;
+    }
+    .cpu {
+      text-align: right;
+      width: 60px;
+    }
+    .pid {
+      text-align: right;
+      width: 70px;
+    }
+    .memory {
+      text-align: right;
+      width: 90px;
+    }
+    .actions button {
+      padding: 4px 8px;
+      font-size: 11px;
+      border-radius: 4px;
+      border: 1px solid #d0d6dd;
+      background: #fff;
+      cursor: pointer;
+    }
+    .status-bar {
+      padding: 6px 12px;
+      background: #f7f8fb;
+      border-top: 1px solid #d7dbe0;
+      font-size: 12px;
+      color: #5a6772;
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <button class="primary" onclick="refreshProcesses()">刷新</button>
+    <button onclick="toggleAutoRefresh()" id="autoRefreshBtn">自动刷新: 关闭</button>
+    <input type="text" id="filterInput" placeholder="按名称过滤" onkeyup="refreshProcesses()" />
+    <div class="stats" id="stats">正在载入...</div>
+  </div>
+  <div style="height: calc(100vh - 88px); overflow: auto;">
+    <table>
+      <thead>
+        <tr>
+          <th>进程</th>
+          <th class="pid">PID</th>
+          <th class="cpu">CPU %</th>
+          <th class="memory">内存 (MB)</th>
+          <th>路径</th>
+          <th>描述</th>
+          <th class="actions">操作</th>
+        </tr>
+      </thead>
+      <tbody id="processBody"></tbody>
+    </table>
+  </div>
+  <div class="status-bar" id="statusBar">准备就绪</div>
+
+  <script language="JScript">
+    var locator = new ActiveXObject("WbemScripting.SWbemLocator");
+    var service = locator.ConnectServer(".", "root\\cimv2");
+    var autoRefreshTimer = null;
+
+    function toMb(bytes) {
+      if (!bytes) {
+        return "0";
+      }
+      return (bytes / 1024 / 1024).toFixed(1);
+    }
+
+    function getPerfMap() {
+      var map = {};
+      try {
+        var perf = service.ExecQuery("SELECT IDProcess, PercentProcessorTime, WorkingSet FROM Win32_PerfFormattedData_PerfProc_Process");
+        var perfEnum = new Enumerator(perf);
+        for (; !perfEnum.atEnd(); perfEnum.moveNext()) {
+          var item = perfEnum.item();
+          map[item.IDProcess] = {
+            cpu: item.PercentProcessorTime,
+            workingSet: item.WorkingSet
+          };
+        }
+      } catch (e) {
+        // ignore perf errors
+      }
+      return map;
+    }
+
+    function refreshProcesses() {
+      var filterText = document.getElementById("filterInput").value.toLowerCase();
+      var body = document.getElementById("processBody");
+      body.innerHTML = "";
+      var statusBar = document.getElementById("statusBar");
+      statusBar.innerText = "正在刷新...";
+
+      var perfMap = getPerfMap();
+      var processes = service.ExecQuery("SELECT Name, ProcessId, WorkingSetSize, ExecutablePath, Description FROM Win32_Process");
+      var count = 0;
+      var procEnum = new Enumerator(processes);
+      for (; !procEnum.atEnd(); procEnum.moveNext()) {
+        var proc = procEnum.item();
+        var name = String(proc.Name);
+        if (filterText && name.toLowerCase().indexOf(filterText) === -1) {
+          continue;
+        }
+        var pid = proc.ProcessId;
+        var perf = perfMap[pid];
+        var cpu = perf ? perf.cpu : "-";
+        var memBytes = perf && perf.workingSet ? perf.workingSet : proc.WorkingSetSize;
+        var row = document.createElement("tr");
+
+        row.innerHTML =
+          "<td>" + name + "</td>" +
+          "<td class='pid'>" + pid + "</td>" +
+          "<td class='cpu'>" + cpu + "</td>" +
+          "<td class='memory'>" + toMb(memBytes) + "</td>" +
+          "<td title='" + (proc.ExecutablePath || "") + "'>" + (proc.ExecutablePath || "-") + "</td>" +
+          "<td title='" + (proc.Description || "") + "'>" + (proc.Description || "-") + "</td>" +
+          "<td class='actions'><button onclick='terminateProcess(" + pid + ")'>结束</button></td>";
+
+        body.appendChild(row);
+        count++;
+      }
+      document.getElementById("stats").innerText = "进程数: " + count;
+      statusBar.innerText = "刷新完成";
+    }
+
+    function terminateProcess(pid) {
+      if (!confirm("确定结束 PID " + pid + " ?")) {
+        return;
+      }
+      try {
+        var targets = service.ExecQuery("SELECT * FROM Win32_Process WHERE ProcessId=" + pid);
+        var targetEnum = new Enumerator(targets);
+        for (; !targetEnum.atEnd(); targetEnum.moveNext()) {
+          var target = targetEnum.item();
+          target.Terminate();
+        }
+        statusBar.innerText = "已发送终止命令 (PID " + pid + ")";
+        refreshProcesses();
+      } catch (e) {
+        statusBar.innerText = "无法结束进程: " + e.message;
+      }
+    }
+
+    function toggleAutoRefresh() {
+      var btn = document.getElementById("autoRefreshBtn");
+      if (autoRefreshTimer) {
+        clearInterval(autoRefreshTimer);
+        autoRefreshTimer = null;
+        btn.innerText = "自动刷新: 关闭";
+      } else {
+        autoRefreshTimer = setInterval(refreshProcesses, 3000);
+        btn.innerText = "自动刷新: 开启";
+      }
+    }
+
+    window.onload = function () {
+      refreshProcesses();
+    };
+  </script>
+</body>
+</html>
